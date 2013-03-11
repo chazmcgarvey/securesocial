@@ -162,3 +162,44 @@ object IdentityProvider {
     10 seconds
   }
 }
+
+/**
+ * A RedirectingProvider is a provider that redirects back to a callback URI
+ * as part of its authentication flow.
+ */
+trait RedirectingProvider {
+
+  self: IdentityProvider =>
+
+  /**
+   * Authenticate with an explicit callback URI.
+   *
+   * @param redirectUri
+   * @param request
+   * @tparam A
+   * @return
+   */
+  def authenticateWithRedirectUri[A](redirectUri: String)(implicit request: Request[A]): Either[Result, Identity] = {
+    doAuth(redirectUri).fold(
+      result => Left(result),
+      u =>
+      {
+        val user = fillProfile(u)
+        val saved = UserService.save(user)
+        Right(saved)
+      }
+    )
+  }
+
+  /**
+   * Providers need to implement the authentication logic. This method needs to return
+   * a User object that then gets passed to the fillProfile method
+   *
+   * @param redirectUri
+   * @param request
+   * @tparam A
+   * @return Either a Result or a User
+   */
+  def doAuth[A](redirectUri: String)(implicit request: Request[A]): Either[Result, SocialUser]
+
+}
