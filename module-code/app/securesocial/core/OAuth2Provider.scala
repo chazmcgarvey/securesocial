@@ -30,7 +30,7 @@ import scala.concurrent.TimeoutException
 /**
  * Base class for all OAuth2 providers
  */
-abstract class OAuth2Provider(application: Application) extends IdentityProvider(application) {
+abstract class OAuth2Provider(application: Application) extends IdentityProvider(application) with RedirectingProvider {
   val settings = createSettings()
 
   def authMethod = AuthenticationMethod.OAuth2
@@ -59,13 +59,13 @@ abstract class OAuth2Provider(application: Application) extends IdentityProvider
     result.get
   }
 
-  private def getAccessToken[A](code: String)(implicit request: Request[A]):OAuth2Info = {
+  private def getAccessToken[A](code: String, redirectUri: String)(implicit request: Request[A]):OAuth2Info = {
     val params = Map(
       OAuth2Constants.ClientId -> Seq(settings.clientId),
       OAuth2Constants.ClientSecret -> Seq(settings.clientSecret),
       OAuth2Constants.GrantType -> Seq(OAuth2Constants.AuthorizationCode),
       OAuth2Constants.Code -> Seq(code),
-      OAuth2Constants.RedirectUri -> Seq(RoutesHelper.authenticate(id).absoluteURL(IdentityProvider.sslEnabled))
+      OAuth2Constants.RedirectUri -> Seq(redirectUri)
     ) ++ settings.accessTokenUrlParams.mapValues(Seq(_))
     val call = WS.url(settings.accessTokenUrl).post(params)
     try {
@@ -91,7 +91,13 @@ abstract class OAuth2Provider(application: Application) extends IdentityProvider
       )
   }
 
-  def doAuth[A]()(implicit request: Request[A]): Either[Result, SocialUser] = {
+  def doAuth[A]()(implicit request: Request[A]): Either[Result, SocialUser] =
+    doAuth(None, Map(), None)
+
+  def doAuth[A](redirectUri: String)(implicit request: Request[A]): Either[Result, SocialUser] =
+    doAuth(Some(redirectUri), Map(), None)
+
+  def doAuth[A](redirectUri: Option[String], extraParams: Map[String, String], scope: Option[String])(implicit request: Request[A]): Either[Result, SocialUser] = {
     request.queryString.get(OAuth2Constants.Error).flatMap(_.headOption).map( error => {
       error match {
         case OAuth2Constants.AccessDenied => throw new AccessDeniedException()
@@ -102,6 +108,7 @@ abstract class OAuth2Provider(application: Application) extends IdentityProvider
       throw new AuthenticationException()
     })
 
+    val callbackUri = redirectUri.getOrElse(RoutesHelper.authenticate(id).absoluteURL(IdentityProvider.sslEnabled))
     request.queryString.get(OAuth2Constants.Code).flatMap(_.headOption) match {
       case Some(code) =>
         // we're being redirected back from the authorization server with the access code.
@@ -112,7 +119,7 @@ abstract class OAuth2Provider(application: Application) extends IdentityProvider
           originalState <- Cache.getAs[String](sessionId) ;
           currentState <- request.queryString.get(OAuth2Constants.State).flatMap(_.headOption) if originalState == currentState
         ) yield {
-          val accessToken = getAccessToken(code)
+          val accessToken = getAccessToken(code, callbackUri)
           val oauth2Info = Some(
             OAuth2Info(accessToken.accessToken, accessToken.tokenType, accessToken.expiresIn, accessToken.refreshToken)
           )
@@ -132,11 +139,15 @@ abstract class OAuth2Provider(application: Application) extends IdentityProvider
         Cache.set(sessionId, state)
         var params = List(
           (OAuth2Constants.ClientId, settings.clientId),
-          (OAuth2Constants.RedirectUri, RoutesHelper.authenticate(id).absoluteURL(IdentityProvider.sslEnabled)),
+          (OAuth2Constants.RedirectUri, callbackUri),
           (OAuth2Constants.ResponseType, OAuth2Constants.Code),
           (OAuth2Constants.State, state))
-        settings.scope.foreach( s => { params = (OAuth2Constants.Scope, s) :: params })
+        if ( !scope.isEmpty )
+          params = (OAuth2Constants.Scope, scope.get) :: params
+        else
+          settings.scope.foreach( s => { params = (OAuth2Constants.Scope, s) :: params })
         settings.authorizationUrlParams.foreach( e => { params = e :: params })
+        extraParams.foreach( e => { params = e :: params })
         val url = settings.authorizationUrl +
           params.map( p => URLEncoder.encode(p._1, "UTF-8") + "=" + URLEncoder.encode(p._2, "UTF-8")).mkString("?", "&", "")
         if ( Logger.isDebugEnabled ) {

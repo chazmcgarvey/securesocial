@@ -29,7 +29,7 @@ import Play.current
 /**
  * Base class for all OAuth1 providers
  */
-abstract class OAuth1Provider(application: Application) extends IdentityProvider(application)  {
+abstract class OAuth1Provider(application: Application) extends IdentityProvider(application) with RedirectingProvider {
   val serviceInfo = createServiceInfo(propertyKey)
   val service = OAuth(serviceInfo, use10a = true)
 
@@ -53,7 +53,13 @@ abstract class OAuth1Provider(application: Application) extends IdentityProvider
   }
 
 
-  def doAuth[A]()(implicit request: Request[A]):Either[Result, SocialUser] = {
+  def doAuth[A]()(implicit request: Request[A]): Either[Result, SocialUser] =
+    doAuth(None)
+
+  def doAuth[A](redirectUri: String)(implicit request: Request[A]): Either[Result, SocialUser] =
+    doAuth(Some(redirectUri))
+
+  def doAuth[A](redirectUri: Option[String])(implicit request: Request[A]): Either[Result, SocialUser] = {
     if ( request.queryString.get("denied").isDefined ) {
       // the user did not grant access to the account
       throw new AccessDeniedException()
@@ -87,7 +93,7 @@ abstract class OAuth1Provider(application: Application) extends IdentityProvider
     }.getOrElse {
       // the oauth_verifier field is not in the request, this is the 1st step in the auth flow.
       // we need to get the request tokens
-      val callbackUrl = RoutesHelper.authenticate(id).absoluteURL(IdentityProvider.sslEnabled)
+      val callbackUrl = redirectUri.getOrElse(RoutesHelper.authenticate(id).absoluteURL(IdentityProvider.sslEnabled))
       if ( Logger.isDebugEnabled ) {
         Logger.debug("[securesocial] callback url = " + callbackUrl)
       }
